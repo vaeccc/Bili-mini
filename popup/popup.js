@@ -520,7 +520,7 @@ function renderAccount() {
 
 function renderLibrary() {
   librarySubtitle.removeAttribute("title");
-  librarySection.classList.toggle("hide-section-heading", library.tab === "home" || library.tab === "recommend");
+  librarySection.classList.toggle("hide-section-heading", library.tab !== "search");
   document.querySelectorAll("[data-library-tab]").forEach((button) => button.classList.toggle("active", button.dataset.libraryTab === library.tab));
   document.querySelectorAll("[data-account-tab]").forEach((button) => button.classList.toggle("active", button.dataset.accountTab === library.tab));
   const playerVisible = library.tab === "player";
@@ -734,26 +734,6 @@ function renderLibrary() {
     }
     return;
   }
-  if (library.tab === "channels") {
-    libraryHeading.textContent = "频道";
-    librarySubtitle.textContent = "站内分区";
-    const channels = [
-      ["音乐", "music"], ["舞蹈", "舞蹈"], ["影视", "影视"], ["生活", "生活"],
-      ["知识", "知识"], ["游戏", "游戏"], ["动画", "anime"], ["鬼畜", "鬼畜"]
-    ];
-    const list = document.createElement("div");
-    list.className = "channel-grid";
-    for (const [label, value] of channels) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.textContent = label;
-      button.dataset.channel = value;
-      list.append(button);
-    }
-    libraryContent.append(list);
-    libraryContent.append(makeLibraryState("选择一个分区，查看站内相关视频。"));
-    return;
-  }
   if (library.tab !== "favorites") return;
   libraryHeading.textContent = "收藏";
   librarySubtitle.textContent = library.selectedFolder?.title || "我的收藏夹";
@@ -965,7 +945,6 @@ feedPane.addEventListener("scroll", () => {
 libraryContent.addEventListener("click", (event) => {
   const play = event.target.closest("button[data-play-bvid]");
   const folder = event.target.closest("button[data-folder-id]");
-  const channel = event.target.closest("button[data-channel]");
   const accountShortcut = event.target.closest("button[data-account-shortcut]");
   const retryFollowing = event.target.closest("button[data-retry-following]");
   if (accountShortcut) {
@@ -996,21 +975,6 @@ libraryContent.addEventListener("click", (event) => {
   } else if (retryFollowing) {
     library.followingError = "";
     library.followingLoaded = false;
-    renderLibrary();
-  } else if (channel) {
-    const target = channel.dataset.channel;
-    if (TOPIC_PAGES[target]) {
-      library.tab = target;
-    } else {
-      library.tab = "search";
-      library.searchKeyword = target;
-      library.searchResults = [];
-      library.searchLoading = false;
-      library.searchError = "";
-      library.searchPage = 0;
-      library.searchComplete = false;
-    }
-    status.textContent = "";
     renderLibrary();
   }
 });
