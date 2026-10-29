@@ -1,0 +1,66 @@
+[
+  {
+    "id": 1,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [{
+        "header": "Referer",
+        "operation": "set",
+        "value": "https://www.bilibili.com/"
+      }]
+    },
+    "condition": {
+      "urlFilter": "||bilivideo.cn^",
+      "resourceTypes": ["media"]
+    }
+  },
+  {
+    "id": 2,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [{
+        "header": "Referer",
+        "operation": "set",
+        "value": "https://www.bilibili.com/"
+      }]
+    },
+    "condition": {
+      "urlFilter": "||bilivideo.com^",
+      "resourceTypes": ["media"]
+    }
+  },
+  {
+    "id": 3,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [{
+        "header": "Referer",
+        "operation": "set",
+        "value": "https://www.bilibili.com/"
+      }]
+    },
+    "condition": {
+      "urlFilter": "||hdslb.com^",
+      "resourceTypes": ["media"]
+    }
+  },
+  {
+    "id": 4,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [{
+        "header": "Referer",
+        "operation": "set",
+        "value": "https://www.bilibili.com/"
+      }]
+    },
+    "condition": {
+      "urlFilter": "||mountaintoys.cn^",
+      "resourceTypes": ["media"]
+    }
+  }
+]

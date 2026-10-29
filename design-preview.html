@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>B站音乐 Mini · UI 预览</title>
+  <link rel="stylesheet" href="popup/popup.css">
+  <style>
+    :root { color-scheme: light; --preview-width: 538px; }
+    body { width: auto; min-width: 320px; margin: 0; background: #e9e9ec; }
+    .preview-tools { position: sticky; top: 0; z-index: 20; display:flex; gap:8px; align-items:center; flex-wrap:wrap; padding:10px 14px; border-bottom:1px solid #ddd; background:#fff; font:13px system-ui,sans-serif; }
+    .preview-tools button { padding:6px 10px; border:1px solid #ddd; border-radius:6px; background:white; }
+    .preview-tools button.active { color:#d94776; border-color:#f4c5d4; background:#fff7fa; }
+    .preview-tools .hint { color:#777; margin-left:auto; }
+    .stage { width:min(var(--preview-width), 100%); margin:18px auto; resize:horizontal; overflow:auto; box-shadow:0 4px 22px #0002; }
+    .app { width:100%; min-width:320px; }
+    .topbar h1 { padding-inline:10px; font-size:14px; }
+    .feed-nav { flex:0 0 auto; }
+    .feed-nav button { padding-inline:7px; }
+    .account-panel { flex:0 0 112px; width:112px; max-width:none; margin-left:auto; gap:6px; }
+    .account-copy { flex:1 1 auto; }
+    .account-copy strong, .account-copy span { max-width:none; }
+    .account-panel button { flex:none; }
+    .workspace { height:min(552px, calc(100vh - 170px)); min-height:350px; grid-template-columns:minmax(0,1fr) 58px; }
+    .feed-pane { min-width:0; padding:0 12px 10px; }
+    .library { padding:0; }
+    .section-heading { position:sticky; top:0; z-index:3; height:40px; min-height:40px; background:#f7f7f8; }
+    .library-content { padding-bottom:8px; }
+    .video-list { margin-top:4px; }
+    .video-entry { grid-template-columns:clamp(78px,20vw,96px) minmax(0,1fr) 24px; gap:8px; padding:7px 0; }
+    .video-list img { width:100%; height:auto; aspect-ratio:16/9; }
+    .video-list span { white-space:nowrap; }
+    .side-rail { overflow-y:auto; }
+    .side-rail button { display:grid; place-items:center; min-height:38px; white-space:nowrap; }
+    .mini-player { --cover-size:72px; grid-template-columns:var(--cover-size) minmax(0,1fr) minmax(155px,38%); padding:8px 12px; column-gap:10px; }
+    .mini-cover-button { width:var(--cover-size); height:auto; aspect-ratio:1; }
+    .mini-info { min-width:0; }
+    .mini-right { min-width:0; }
+    @media(max-width:480px) {
+      .topbar h1 { padding-inline:7px; font-size:12px; }
+      .feed-nav button { padding-inline:5px; font-size:11px; }
+      .account-panel { flex-basis:100px; width:100px; padding-inline:4px; }
+      .account-copy strong { font-size:9px; }
+      .account-copy span { font-size:8px; }
+      .workspace { grid-template-columns:minmax(0,1fr) 50px; }
+      .feed-pane { padding-inline:8px; }
+      .mini-player { --cover-size:60px; grid-template-columns:var(--cover-size) minmax(0,1fr) 134px; gap:6px; padding-inline:7px; }
+      .mini-progress-row { grid-template-columns:25px minmax(42px,1fr) 25px; gap:3px; }
+      .preview-tools .hint { display:none; }
+    }
+  </style>
+</head>
+<body>
+  <nav class="preview-tools" aria-label="预览控制">
+    <strong>预览宽度</strong>
+    <button data-width="480">480px</button><button data-width="538" class="active">538px</button><button data-width="768">768px</button><button data-width="1280">1280px</button>
+    <span class="hint">拖动预览右下角可自定义宽度</span>
+  </nav>
+  <div class="stage" id="stage">
+    <main class="app">
+      <header class="topbar"><h1>哔哩哔哩</h1><nav class="feed-nav" aria-label="账号导航"><button>我的</button><button>关注</button><button>收藏</button><button>历史</button></nav><section class="account-panel"><div class="account-copy"><strong>预览账号</strong><span>B站账号</span></div><button title="刷新账号状态">↻</button></section></header>
+      <div class="workspace"><section class="feed-pane"><section class="library"><div class="section-heading"><strong id="heading">主页</strong><span id="subheading">首页推荐</span></div><div class="library-content"><ul class="video-list" id="videos"></ul></div></section></section>
+        <aside class="side-rail" aria-label="分类导航"><button data-name="播放">播放</button><button data-name="推荐" class="active">推荐</button><button data-name="搜索">搜索</button><button data-name="音乐">音乐</button><button data-name="频道">频道</button><button data-name="直播">直播</button><button data-name="番剧">番剧</button><button data-name="漫画">漫画</button><button data-name="专栏">专栏</button></aside>
+      </div>
+      <footer class="mini-player" aria-label="迷你播放器"><div class="mini-cover-button cover-art" aria-label="封面"></div><div class="mini-info"><strong id="track">华农兄弟：搞笑合集，农村生活日常精选</strong><span>P1</span></div><section class="mini-right"><div class="mini-control-row"><div class="mini-controls"><button aria-label="上一首">|◀</button><button class="mini-toggle" id="play">▶</button><button aria-label="下一首">▶|</button></div></div><div class="mini-progress-row"><span class="mini-time" id="elapsed">0:17</span><input class="mini-progress" id="seek" type="range" min="0" max="735" value="17"><span class="mini-time">12:15</span></div></section></footer>
+    </main>
+  </div>
+  <script>
+    const art=(a,b,label)=>`data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 180"><defs><linearGradient id="g" x2="1" y2="1"><stop stop-color="${a}"/><stop offset="1" stop-color="${b}"/></linearGradient></defs><rect width="320" height="180" fill="url(#g)"/><circle cx="250" cy="48" r="48" fill="#fff" opacity=".16"/><path d="M0 145 Q90 85 180 145 T360 130 V180 H0" fill="#10131c" opacity=".25"/><text x="18" y="150" fill="white" font-size="20" font-family="sans-serif">${label}</text></svg>`)}`;
+    const data=[['#713d73','#f07a67','今日推荐','【全新旋律】假如周杰伦唱《如诗一般》…','张黎舒','3:50','2.7万播放'],['#b77935','#292e3c','美食','吃到了馋心的潮汕美食，拆开热气直冒…','小成鱼不下饭呀','7:25','15.6万播放'],['#357b9c','#d2c6ac','旅行','陈绮贞——《旅行的意义》，十五周年纪念版','华语音乐MV','5:56','1484播放'],['#182b42','#697c8c','音乐','当恩怨各一半，我怎么圈揽？光遇琴谱…','光遇琴谱Tofo','4:14','1850播放'],['#824e34','#d8a85a','现场','紧闭双眼才能看得见｜吉他弹唱《忘记时间》','草莓熊的Melody','3:35','1.5万播放'],['#35464e','#a8a6a0','汽车','沉浸式试车，奔驰迈巴赫S480 快来…','大地瓜车真香','7:16','46万播放'],['#416b41','#c1ae56','生活','华农兄弟：乡村生活里的有趣日常','华农兄弟','8:32','12万播放'],['#423e61','#bd7694','纪录片','那些留在记忆里的故事与风景','纪录片频道','42:10','9.3万播放']];
+    const list=document.querySelector('#videos'); data.forEach((d,i)=>{const li=document.createElement('li');li.innerHTML=`<button class="video-entry"><img src="${art(d[0],d[1],d[2])}" alt=""><span class="video-copy"><strong>${d[3]}</strong><span>${d[4]} · ${d[5]} · ${d[6]}</span></span><span class="video-play-icon">▶</span></button></li>`;list.append(li)});
+    document.querySelectorAll('[data-width]').forEach(btn=>btn.onclick=()=>{document.querySelector('#stage').style.width=btn.dataset.width+'px';document.documentElement.style.setProperty('--preview-width',btn.dataset.width+'px');document.querySelectorAll('[data-width]').forEach(b=>b.classList.toggle('active',b===btn))});
+    document.querySelectorAll('.side-rail button').forEach(btn=>btn.onclick=()=>{document.querySelectorAll('.side-rail button').forEach(b=>b.classList.toggle('active',b===btn));document.querySelector('#heading').textContent=btn.dataset.name==='主站'?'主页':btn.dataset.name;document.querySelector('#subheading').textContent=btn.dataset.name==='主站'?'首页推荐':`${btn.dataset.name}内容预览`;document.querySelector('.feed-pane').scrollTop=0});
+    let playing=true;document.querySelector('#play').onclick=e=>{playing=!playing;e.currentTarget.textContent=playing?'Ⅱ':'▶'};document.querySelector('#seek').oninput=e=>document.querySelector('#elapsed').textContent=`${Math.floor(e.target.value/60)}:${String(e.target.value%60).padStart(2,'0')}`;
+  </script>
+</body>
+</html>

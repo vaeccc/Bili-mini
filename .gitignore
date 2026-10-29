@@ -1,0 +1,7 @@
+# Chrome-generated rule metadata
+_metadata/generated_indexed_rulesets/
+
+# Local development output
+dist/
+release/
+node_modules/

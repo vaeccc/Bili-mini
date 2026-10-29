@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="popup.css">
+  <title>Bili mini</title>
+</head>
+  <body>
+  <main class="app">
+    <header class="topbar">
+      <h1 aria-label="Bili mini"><img class="brand-icon" src="assets/bilibili-logo.svg" alt=""><span>Bili mini</span></h1>
+      <nav class="feed-nav" aria-label="主导航">
+        <button class="active" data-account-tab="account" type="button">我的</button>
+        <button data-account-tab="following" type="button">关注</button>
+        <button data-account-tab="favorites" type="button">收藏</button>
+        <button data-account-tab="history" type="button">历史</button>
+      </nav>
+      <section id="account-panel" class="account-panel">
+        <img id="account-avatar" alt="" hidden>
+        <div class="account-copy"><strong id="account-name">未登录</strong><span id="account-detail">B站账号</span></div>
+        <button id="account-action" type="button" aria-label="账号">●</button>
+      </section>
+    </header>
+    <div class="workspace">
+      <section class="feed-pane">
+        <p id="status" role="status"></p>
+        <section id="player-panel" class="player-panel">
+          <p id="player-empty" class="player-empty" hidden>暂无播放内容，请从主站或推荐选择视频。</p>
+          <section id="video-shell" hidden aria-label="当前视频画面">
+            <video id="video" muted playsinline preload="metadata"></video>
+            <span id="video-note">画面仅在此弹窗打开时加载</span>
+          </section>
+          <section id="now-playing" class="now-playing-card" hidden>
+            <img id="cover" alt="">
+            <div class="track-copy">
+              <strong id="title"></strong>
+              <span id="subtitle"></span>
+            </div>
+            <span class="playing-pulse" aria-label="正在播放"><i></i><i></i><i></i></span>
+          </section>
+          <div class="controls">
+            <button id="previous" class="transport" type="button" disabled title="上一首" aria-label="上一首">⏮</button>
+            <button id="toggle" class="transport primary-control" type="button" disabled aria-label="播放">▶</button>
+            <button id="next" class="transport" type="button" disabled title="下一首" aria-label="下一首">⏭</button>
+            <span id="time">0:00 / 0:00</span>
+          </div>
+          <div class="progress-panel">
+            <input id="progress" type="range" min="0" max="0" value="0" step="0.1" disabled aria-label="播放进度">
+          </div>
+          <section id="queue-panel" class="queue-card queue-panel">
+            <div class="queue-heading">
+              <strong>播放列表</strong>
+              <div class="queue-actions">
+                <button id="clear-queue" type="button" title="清空播放列表">清空</button>
+                <button id="play-mode" type="button" title="切换播放模式">顺序播放</button>
+              </div>
+            </div>
+            <ol id="queue" aria-label="播放列表"></ol>
+          </section>
+        </section>
+        <section class="library">
+          <div class="section-heading"><strong id="library-heading">最近推荐</strong><span id="library-subtitle">首页推荐</span></div>
+          <div id="library-content" class="library-content"></div>
+        </section>
+      </section>
+      <aside class="side-rail" aria-label="分类导航">
+        <button data-library-tab="player" type="button">播放</button>
+        <button data-library-tab="recommend" type="button">推荐</button>
+        <button data-library-tab="search" type="button">搜索</button>
+        <button data-library-tab="music" type="button">音乐</button>
+        <button data-library-tab="channels" type="button">频道</button>
+        <button data-library-tab="live" type="button">直播</button>
+        <button data-library-tab="anime" type="button">番剧</button>
+        <button data-library-tab="manga" type="button">漫画</button>
+        <button data-library-tab="article" type="button">专栏</button>
+      </aside>
+    </div>
+    <footer id="mini-player" class="mini-player" hidden aria-label="迷你播放器">
+      <button id="mini-cover-button" class="mini-cover-button" type="button" aria-label="打开播放页">
+        <img id="mini-cover" alt="">
+      </button>
+      <button id="mini-info" class="mini-info" type="button" aria-label="打开播放页">
+        <strong id="mini-title"></strong>
+        <span id="mini-subtitle"></span>
+      </button>
+      <section class="mini-right" aria-label="播放控制与进度">
+        <div class="mini-control-row">
+          <span class="mini-pulse" aria-label="正在播放"><i></i><i></i><i></i></span>
+          <div class="mini-controls" aria-label="迷你播放器控制">
+            <button id="mini-previous" type="button" title="上一首" aria-label="上一首">⏮</button>
+            <button id="mini-toggle" class="mini-toggle" type="button" title="播放" aria-label="播放">▶</button>
+            <button id="mini-next" type="button" title="下一首" aria-label="下一首">⏭</button>
+          </div>
+        </div>
+        <div class="mini-progress-row">
+          <span id="mini-current-time" class="mini-time">0:00</span>
+          <input id="mini-progress" class="mini-progress" type="range" min="0" max="0" value="0" step="0.1" aria-label="播放进度">
+          <span id="mini-duration" class="mini-time">0:00</span>
+        </div>
+      </section>
+    </footer>
+  </main>
+  <script type="module" src="popup.js"></script>
+</body>
+</html>
