@@ -2,6 +2,14 @@
 
 独立的 Chrome Manifest V3 开发版：将用户有权播放的 B 站视频音轨放入 offscreen 后台播放器。已实现 BVID/链接解析、WBI 签名、后台音频、基础控制、popup 长连接、播放地址刷新、分 P 队列、本地与账号历史、站内搜索、热门与主页推荐、音乐/直播/番剧/漫画/专栏相关内容、静音同步视频、B站浏览器登录态、可分页特别关注和只读收藏夹。
 
+## Mini 家族
+
+Mini 家族为不同音乐平台提供轻量浏览器播放器：
+
+- [Netease Music Mini](https://github.com/vaeccc/netease-music-mini)：网易云音乐歌单、搜索与后台播放。
+- [Bili mini](https://github.com/vaeccc/Bili-mini)：把有权访问的 B 站视频音轨作为后台音乐播放。
+- [QQ Music Mini](https://github.com/vaeccc/qq-music-mini)：QQ 音乐曲库、搜索与后台播放。
+
 ## 本地加载
 
 1. 打开 `chrome://extensions/`。
