@@ -23,6 +23,7 @@ const BROWSER_HEADERS = { accept: "application/json, text/plain, */*" };
 
 let wbiKeyCache = null;
 let wbiKeyExpiresAt = 0;
+let wbiKeyRequest = null;
 
 export class BilibiliApiError extends Error {
   constructor(code, message, detail = {}) {
@@ -127,7 +128,7 @@ async function requestBody(url) {
         signal: controller.signal
       });
       lastStatus = response.status;
-      if (response.ok) return response.json();
+      if (response.ok) return await response.json();
       if (!retryableStatus(response.status) || attempt === maxAttempts - 1) {
         throw new BilibiliApiError("NETWORK", `B 站请求失败（HTTP ${response.status}）`, { status: response.status });
       }
@@ -191,22 +192,24 @@ function parseDuration(value) {
 
 async function getWbiMixinKey() {
   if (wbiKeyCache && Date.now() < wbiKeyExpiresAt) return wbiKeyCache;
+  if (wbiKeyRequest) return wbiKeyRequest;
 
-  // nav can return -101 for logged-out users while still returning wbi_img.
-  let response;
+  // Share concurrent requests, but always allow retry after a failure.
+  wbiKeyRequest = (async () => {
+    // nav can return -101 for logged-out users while still returning wbi_img.
+    const body = await requestBody(NAV_URL);
+    const imageUrl = body?.data?.wbi_img?.img_url;
+    const subUrl = body?.data?.wbi_img?.sub_url;
+    if (!imageUrl || !subUrl) throw new BilibiliApiError("WBI_KEY", "无法获取 B 站 WBI 密钥");
+    wbiKeyCache = makeMixinKey(basenameWithoutExtension(imageUrl), basenameWithoutExtension(subUrl));
+    wbiKeyExpiresAt = Date.now() + 30 * 60 * 1000;
+    return wbiKeyCache;
+  })();
   try {
-    response = await fetch(NAV_URL, { credentials: "include", headers: BROWSER_HEADERS, referrer: "https://www.bilibili.com/", referrerPolicy: "strict-origin-when-cross-origin" });
-  } catch (error) {
-    throw new BilibiliApiError("NETWORK", "无法获取 WBI 密钥", { cause: error?.message });
+    return await wbiKeyRequest;
+  } finally {
+    wbiKeyRequest = null;
   }
-  const body = await response.json();
-  const imageUrl = body?.data?.wbi_img?.img_url;
-  const subUrl = body?.data?.wbi_img?.sub_url;
-  if (!imageUrl || !subUrl) throw new BilibiliApiError("WBI_KEY", "无法获取 B 站 WBI 密钥");
-
-  wbiKeyCache = makeMixinKey(basenameWithoutExtension(imageUrl), basenameWithoutExtension(subUrl));
-  wbiKeyExpiresAt = Date.now() + 30 * 60 * 1000;
-  return wbiKeyCache;
 }
 
 async function makeWbiQuery(params) {
@@ -270,12 +273,15 @@ export async function getAccount() {
   const body = await requestBody(NAV_URL);
   const data = body?.data || {};
   const loggedIn = Number(body?.code) === 0 && Boolean(data.isLogin);
+  const rawVipStatus = data.vipStatus ?? data.vip?.status;
+  const vipStatus = rawVipStatus === 0 || rawVipStatus === "0" ? false : rawVipStatus === 1 || rawVipStatus === "1" ? true : null;
   return {
     loggedIn,
     mid: loggedIn ? Number(data.mid) : 0,
     name: loggedIn ? data.uname || "B站用户" : "",
     avatar: loggedIn ? data.face || "" : "",
-    level: loggedIn ? Number(data.level_info?.current_level) || 0 : 0
+    level: loggedIn ? Number(data.level_info?.current_level) || 0 : 0,
+    vipActive: loggedIn ? vipStatus : null
   };
 }
 
@@ -328,7 +334,8 @@ export async function getRemoteHistory(viewAt = "", pageSize = 20) {
   const params = new URLSearchParams({ type: "all", ps: String(size) });
   if (viewAt) params.set("view_at", String(viewAt));
   const data = await requestJson(`${HISTORY_URL}?${params.toString()}`);
-  const items = (data?.list || []).map((raw) => {
+  const rawItems = Array.isArray(data?.list) ? data.list : [];
+  const items = rawItems.map((raw) => {
     const history = raw.history || raw;
     const bvid = history.bvid || raw.bvid || "";
     const cid = Number(history.cid || raw.cid || 0);
@@ -343,15 +350,17 @@ export async function getRemoteHistory(viewAt = "", pageSize = 20) {
       owner: raw.author_name || raw.owner?.name || "",
       views: Number(raw.stat?.view || 0) || 0,
       viewAt: Number(raw.view_at || 0) || 0,
+      progress: raw.progress == null || !Number.isFinite(Number(raw.progress)) ? null : Number(raw.progress),
       page: Number(history.page) || 1
     };
   }).filter((item) => item.bvid);
   const cursor = data?.cursor || {};
-  const nextViewAt = cursor.view_at ?? cursor.max ?? items.at(-1)?.viewAt ?? 0;
+  const nextViewAt = Number(cursor.view_at) || Number(rawItems.at(-1)?.view_at) || 0;
   return {
     items,
     viewAt: Number(nextViewAt) || 0,
-    hasMore: Boolean(cursor.has_more ?? (items.length >= size))
+    hasMore: cursor.has_more == null ? rawItems.length >= size : Number(cursor.has_more) === 1,
+    rawCount: rawItems.length
   };
 }
 
@@ -384,8 +393,10 @@ export async function getFavoriteFolders(mid) {
 
 export async function getFavoriteResources(folderId, page = 1, pageSize = 20) {
   if (!Number(folderId)) throw new BilibiliApiError("INVALID_FOLDER", "无效的收藏夹");
-  const data = await requestJson(`${FAVORITE_RESOURCES_URL}?media_id=${encodeURIComponent(folderId)}&pn=${Math.max(1, Number(page) || 1)}&ps=${Math.min(20, Math.max(1, Number(pageSize) || 20))}&platform=web`);
-  return (data?.medias || []).map(normalizeVideo).filter((item) => item.bvid);
+  const size = Math.min(20, Math.max(1, Number(pageSize) || 20));
+  const data = await requestJson(`${FAVORITE_RESOURCES_URL}?media_id=${encodeURIComponent(folderId)}&pn=${Math.max(1, Number(page) || 1)}&ps=${size}&platform=web`);
+  const rawItems = Array.isArray(data?.medias) ? data.medias : [];
+  return { videos: rawItems.map(normalizeVideo).filter((item) => item.bvid), hasMore: data?.has_more == null ? rawItems.length >= size : Number(data.has_more) === 1, rawCount: rawItems.length };
 }
 
 export async function getPlaybackSources(item) {

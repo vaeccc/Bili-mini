@@ -1,5 +1,11 @@
 import { setIcon } from "./icons.js";
 
+const placeholderImage = new URL("../icons/bilibili-128.png", import.meta.url).href;
+document.addEventListener("error", (event) => {
+  const image = event.target;
+  if (image instanceof HTMLImageElement && image.src !== placeholderImage) image.src = placeholderImage;
+}, true);
+
 const status = document.querySelector("#status");
 const accountAvatar = document.querySelector("#account-avatar");
 const accountName = document.querySelector("#account-name");
@@ -26,6 +32,9 @@ const miniCurrentTime = document.querySelector("#mini-current-time");
 const miniDuration = document.querySelector("#mini-duration");
 const miniProgress = document.querySelector("#mini-progress");
 const video = document.querySelector("#video");
+const videoRecovery = document.querySelector("#video-recovery");
+const videoRecoveryText = document.querySelector("#video-recovery-text");
+const videoRetry = document.querySelector("#video-retry");
 const nowPlaying = document.querySelector("#now-playing");
 const cover = document.querySelector("#cover");
 const title = document.querySelector("#title");
@@ -41,6 +50,7 @@ const queuePanel = document.querySelector("#queue-panel");
 const queue = document.querySelector("#queue");
 
 let currentState = null;
+let accountRefreshPending = false;
 let loadedVideoItemId = "";
 let requestedVideoItemId = "";
 let videoUrls = [];
@@ -55,6 +65,18 @@ let progressSeeking = false;
 let queueSignature = "";
 let feedObserver = null;
 let feedFlowTimer = null;
+let videoRequestId = 0;
+let searchRequestId = 0;
+let historyRequestId = 0;
+let favoriteRequestId = 0;
+let followingRequestId = 0;
+let popularRequestId = 0;
+let historyEmptyPages = 0;
+let favoriteEmptyPages = 0;
+let searchDraft = "";
+let searchComposing = false;
+let foldersLoaded = false;
+let foldersError = "";
 const TOPIC_PAGES = {
   music: { heading: "音乐", subtitle: "音乐相关视频", keyword: "音乐" },
   live: { heading: "直播", subtitle: "直播相关视频", keyword: "直播" },
@@ -70,6 +92,21 @@ function formatTime(total) {
   const seconds = Math.max(0, Math.floor(Number(total) || 0));
   const minutes = Math.floor(seconds / 60);
   return `${minutes}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+function formatHistoryTime(timestamp) {
+  const date = new Date(Number(timestamp) * 1000);
+  if (!Number.isFinite(date.getTime()) || Number(timestamp) <= 0) return "";
+  const pad = (value) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function setCoverSource(image, source) {
+  const requested = source || placeholderImage;
+  // Progress events must not keep retrying an image that already fell back.
+  if (image.dataset.requestedSource === requested) return;
+  image.dataset.requestedSource = requested;
+  image.src = requested;
 }
 
 function formatCount(value) {
@@ -115,34 +152,55 @@ function syncPlayerVisibility() {
 }
 
 function render(nextState) {
+  if (nextState.currentItem?.id !== currentState?.currentItem?.id) {
+    releaseVideo();
+    videoSourceRetryItemId = "";
+    videoSourceRetryCount = 0;
+  }
   currentState = nextState;
   const showPlayer = syncPlayerVisibility();
   const item = nextState.currentItem;
+  const queueLength = (nextState.queue || []).length;
+  const index = Number(nextState.currentIndex);
+  const hasSelection = Boolean(item) && index >= 0 && index < queueLength;
+  const ordered = nextState.playMode === "ORDER" || nextState.playMode === "ONE";
+  const previousUnavailable = !hasSelection || (ordered && index === 0);
+  const nextUnavailable = !hasSelection || (ordered && index === queueLength - 1) || (nextState.playMode === "SHUFFLE" && queueLength < 2);
   const showMiniPlayer = Boolean(item) && !showPlayer;
   miniPlayer.hidden = !showMiniPlayer;
   playerEmpty.hidden = Boolean(item);
   nowPlaying.hidden = !item;
   toggle.disabled = !item;
-  previous.disabled = !item;
-  next.disabled = !item;
+  previous.disabled = previousUnavailable;
+  next.disabled = nextUnavailable;
+  previous.title = hasSelection && previousUnavailable ? "已经是第一首" : "上一首";
+  next.title = hasSelection && nextUnavailable ? (nextState.playMode === "SHUFFLE" ? "没有其他播放项" : "已经是最后一首") : "下一首";
   progress.disabled = !item;
+  miniProgress.disabled = !item;
   if (item) {
-    cover.src = item.cover || "";
+    setCoverSource(cover, item.cover);
     cover.alt = item.videoTitle || item.title || "视频封面";
     title.textContent = displayVideoTitle(item);
+    title.title = title.textContent;
     subtitle.textContent = displayPart(item);
+    subtitle.title = subtitle.textContent;
   }
+  document.querySelector(".playing-pulse").hidden = !item || !nextState.playing;
   setIcon(toggle, nextState.playing ? "pauseCircle" : "playCircle");
   toggle.title = nextState.playing ? "暂停" : "播放";
   toggle.setAttribute("aria-label", toggle.title);
   progress.max = String(nextState.duration || item?.duration || 0);
   if (!progressSeeking) progress.value = String(Math.min(Number(progress.max), nextState.currentTime || 0));
+  updateProgressFill(progress);
   time.textContent = `${formatTime(nextState.currentTime)} / ${formatTime(nextState.duration || item?.duration)}`;
-  miniPrevious.disabled = !item;
+  miniPrevious.disabled = previousUnavailable;
   miniToggle.disabled = !item;
-  miniNext.disabled = !item;
+  miniNext.disabled = nextUnavailable;
+  miniPrevious.title = previous.title;
+  miniNext.title = next.title;
+  clearQueue.disabled = queueLength === 0;
   if (item) {
-    miniCover.src = item.cover || "";
+    setCoverSource(miniCover, item.cover);
     miniCover.alt = item.videoTitle || item.title || "视频封面";
     miniTitle.textContent = displayVideoTitle(item);
     miniSubtitle.textContent = displayPart(item);
@@ -153,7 +211,7 @@ function render(nextState) {
   miniToggle.setAttribute("aria-label", miniToggle.title);
   miniProgress.max = String(nextState.duration || item?.duration || 0);
   if (!progressSeeking) miniProgress.value = String(Math.min(Number(miniProgress.max), nextState.currentTime || 0));
-  miniProgress.style.setProperty("--progress", Number(miniProgress.max) > 0 ? `${(Number(miniProgress.value) / Number(miniProgress.max)) * 100}%` : "0%");
+  updateProgressFill(miniProgress);
   miniCurrentTime.textContent = formatTime(nextState.currentTime);
   miniDuration.textContent = formatTime(nextState.duration || item?.duration);
   const modeLabels = { ORDER: "顺序播放", LOOP: "列表循环", ONE: "单曲循环", SHUFFLE: "随机播放" };
@@ -191,7 +249,7 @@ function render(nextState) {
     if (!queueItems.length) {
       const empty = document.createElement("li");
       empty.className = "queue-empty";
-      empty.textContent = "播放列表为空";
+      empty.textContent = "播放列表为空，从推荐、搜索或收藏中选择视频即可播放。";
       queue.append(empty);
     }
   }
@@ -202,8 +260,7 @@ function render(nextState) {
     videoShell.hidden = true;
     releaseVideo();
   } else if (loadedVideoItemId !== item.id && requestedVideoItemId !== item.id) {
-    requestedVideoItemId = item.id;
-    command("GET_VIEW_SOURCE");
+    requestVideoSource();
   }
   syncVideo(nextState);
 }
@@ -224,22 +281,52 @@ function makeVideoList(videos) {
     play.dataset.playBvid = page > 1 ? `${item.bvid}?p=${page}` : item.bvid;
     const itemLabel = displayVideoTitle(item);
     play.title = `播放《${itemLabel}》${page > 1 ? `（P${page}）` : ""}`;
+    play.setAttribute("aria-label", play.title);
+    const coverWrap = document.createElement("span");
+    coverWrap.className = "video-cover";
     const image = document.createElement("img");
-    image.src = item.cover || "";
+    image.src = item.cover || placeholderImage;
     image.alt = "";
+    image.loading = "lazy";
+    image.decoding = "async";
+    coverWrap.append(image);
+    if (item.historyProgress != null && item.duration > 0 && item.historyProgress >= 0) {
+      const amount = Math.min(100, Math.max(0, item.historyProgress / item.duration * 100));
+      const bar = document.createElement("span");
+      bar.className = "history-progress";
+      bar.setAttribute("aria-hidden", "true");
+      const fill = document.createElement("span");
+      fill.style.width = `${amount}%`;
+      bar.append(fill);
+      coverWrap.append(bar);
+    }
     const copy = document.createElement("div");
+    copy.className = "video-copy";
     const itemTitle = document.createElement("strong");
     itemTitle.textContent = itemLabel;
     itemTitle.title = itemLabel;
     const owner = document.createElement("span");
-    owner.textContent = videoMeta(item);
-    owner.title = owner.textContent;
+    owner.className = "video-meta";
+    owner.title = videoMeta(item);
+    owner.classList.toggle("has-duration", Boolean(item.duration));
+    const author = document.createElement("span");
+    author.className = "video-meta-owner";
+    author.textContent = item.owner || item.bvid || "";
+    owner.append(author);
+    if (item.duration) {
+      const duration = document.createElement("span");
+      duration.className = "video-meta-duration";
+      duration.textContent = formatTime(item.duration);
+      owner.append(duration);
+    }
+    if (item.views) {
+      const views = document.createElement("span");
+      views.className = "video-meta-views";
+      views.textContent = `${formatCount(item.views)}播放`;
+      owner.append(views);
+    }
     copy.append(itemTitle, owner);
-    const playIcon = document.createElement("span");
-    playIcon.className = "video-play-icon";
-    playIcon.setAttribute("aria-hidden", "true");
-    setIcon(playIcon, "listPlay");
-    play.append(image, copy, playIcon);
+    play.append(coverWrap, copy);
     row.append(play);
     list.append(row);
   }
@@ -256,8 +343,9 @@ function makeFeaturedVideo(item) {
   const itemLabel = displayVideoTitle(item);
   play.dataset.playBvid = page > 1 ? `${item.bvid}?p=${page}` : item.bvid;
   play.title = `播放《${itemLabel}》${page > 1 ? `（P${page}）` : ""}`;
+  play.setAttribute("aria-label", play.title);
   const image = document.createElement("img");
-  image.src = item.cover || "";
+  image.src = item.cover || placeholderImage;
   image.alt = "";
   const copy = document.createElement("span");
   copy.className = "featured-video-copy";
@@ -268,12 +356,8 @@ function makeFeaturedVideo(item) {
   itemTitle.title = itemLabel;
   const owner = document.createElement("span");
   owner.textContent = videoMeta(item) || "B站视频";
-  const icon = document.createElement("b");
-  icon.className = "video-play-icon";
-  icon.setAttribute("aria-hidden", "true");
-  setIcon(icon, "listPlay");
   copy.append(kicker, itemTitle, owner);
-  play.append(image, copy, icon);
+  play.append(image, copy);
   card.append(play);
   return card;
 }
@@ -282,7 +366,8 @@ function makeHistoryList(items) {
   return makeVideoList(items.map((item) => ({
     ...item,
     title: displayVideoTitle(item),
-    owner: displayPart(item)
+    owner: item.viewAt ? formatHistoryTime(item.viewAt) : displayPart(item),
+    historyProgress: item.progress
   })));
 }
 
@@ -322,14 +407,24 @@ function requestPopular(page = 1) {
   if (library.popularLoading || library.popularComplete) return;
   library.popularError = "";
   library.popularLoading = true;
-  command("GET_POPULAR", { page });
+  command("GET_POPULAR", { page, requestId: ++popularRequestId });
+}
+
+function refreshPopular() {
+  popularRequestId += 1;
+  library.popular = [];
+  library.popularLoaded = false;
+  library.popularLoading = false;
+  library.popularError = "";
+  library.popularPage = 0;
+  library.popularComplete = false;
 }
 
 function requestSearch(page = 1) {
   if (!library.searchKeyword || library.searchLoading || library.searchComplete) return;
   library.searchLoading = true;
   library.searchError = "";
-  command("SEARCH_VIDEOS", { keyword: library.searchKeyword, page });
+  command("SEARCH_VIDEOS", { keyword: library.searchKeyword, page, requestId: ++searchRequestId });
 }
 
 function getTopicFeed(tab) {
@@ -352,35 +447,90 @@ function requestFavoriteResources(page = 1) {
   if (!library.selectedFolder || library.favoriteLoading || library.favoriteComplete) return;
   library.favoriteLoading = true;
   library.favoriteError = "";
-  command("GET_FAVORITE_RESOURCES", { folderId: library.selectedFolder.id, page });
+  command("GET_FAVORITE_RESOURCES", { folderId: library.selectedFolder.id, page, requestId: ++favoriteRequestId });
 }
 
 function requestRemoteHistory() {
   if (!library.account?.loggedIn || library.remoteHistoryLoading || library.remoteHistoryComplete) return;
   library.remoteHistoryLoading = true;
   library.remoteHistoryError = "";
-  command("GET_REMOTE_HISTORY", { viewAt: library.remoteHistoryCursor });
+  command("GET_REMOTE_HISTORY", { viewAt: library.remoteHistoryCursor, requestId: ++historyRequestId });
+}
+
+function refreshRemoteHistory() {
+  historyRequestId += 1;
+  historyEmptyPages = 0;
+  library.remoteHistoryItems = [];
+  library.remoteHistoryCursor = "";
+  library.remoteHistoryLoaded = false;
+  library.remoteHistoryLoading = false;
+  library.remoteHistoryError = "";
+  library.remoteHistoryComplete = false;
+  if (library.account?.loggedIn) requestRemoteHistory();
 }
 
 function requestFollowing() {
   if (!library.account?.loggedIn || library.followingLoading || library.followingComplete) return;
   library.followingLoading = true;
   library.followingError = "";
-  command("GET_FOLLOWING", { offset: library.followingOffset });
+  command("GET_FOLLOWING", { offset: library.followingOffset, requestId: ++followingRequestId });
 }
 
 function isFeedTab(tab = library.tab) {
   return tab === "search" || tab === "home" || tab === "recommend" || Boolean(TOPIC_PAGES[tab]) || (tab === "favorites" && Boolean(library.selectedFolder)) || (tab === "history" && Boolean(library.account?.loggedIn)) || (tab === "following" && Boolean(library.account?.loggedIn));
 }
 
+function currentFeedError() {
+  if (library.tab === "search") return library.searchError;
+  if (library.tab === "home") return library.recommendationsError;
+  if (library.tab === "recommend") return library.popularError;
+  if (TOPIC_PAGES[library.tab]) return getTopicFeed(library.tab).error;
+  if (library.tab === "favorites") return library.favoriteError;
+  if (library.tab === "history") return library.remoteHistoryError;
+  if (library.tab === "following") return library.followingError;
+  return "";
+}
+
+function retryCurrentFeed() {
+  if (library.tab === "search") library.searchError = "";
+  if (library.tab === "home") library.recommendationsError = "";
+  if (library.tab === "recommend") library.popularError = "";
+  if (TOPIC_PAGES[library.tab]) getTopicFeed(library.tab).error = "";
+  if (library.tab === "favorites") { library.favoriteError = ""; favoriteEmptyPages = 0; }
+  if (library.tab === "history") { library.remoteHistoryError = ""; historyEmptyPages = 0; }
+  if (library.tab === "following") library.followingError = "";
+  status.textContent = "";
+  requestCurrentFeedPage();
+  renderLibrary();
+}
+
+function appendFeedFooter(complete, loading) {
+  const error = currentFeedError();
+  if (error) {
+    libraryContent.append(makeLibraryState(error, { kind: "error", actionLabel: "重试", onAction: retryCurrentFeed }));
+    return;
+  }
+  const footer = document.createElement("p");
+  footer.className = complete ? "feed-end" : "load-more";
+  footer.textContent = complete ? "已显示全部内容" : loading ? "正在加载更多…" : "继续下滑加载更多";
+  libraryContent.append(footer);
+}
+
 function requestCurrentFeedPage() {
-  if (library.tab === "search") return requestSearch(library.searchPage + 1);
-  if (library.tab === "home") return requestRecommendations(library.recommendationsPage + 1);
-  if (library.tab === "recommend") return requestPopular(library.popularPage + 1);
-  if (TOPIC_PAGES[library.tab]) return requestTopic(library.tab, getTopicFeed(library.tab).page + 1);
-  if (library.tab === "favorites" && library.selectedFolder) return requestFavoriteResources(library.favoritePage + 1);
-  if (library.tab === "history" && library.account?.loggedIn) return requestRemoteHistory();
-  if (library.tab === "following" && library.account?.loggedIn) return requestFollowing();
+  const loading = () => ({
+    search: library.searchLoading, home: library.recommendationsLoading,
+    recommend: library.popularLoading, favorites: library.favoriteLoading,
+    history: library.remoteHistoryLoading, following: library.followingLoading
+  }[library.tab] || library.topicFeeds[library.tab]?.loading);
+  if (currentFeedError() || loading()) return;
+  if (library.tab === "search") requestSearch(library.searchPage + 1);
+  else if (library.tab === "home") requestRecommendations(library.recommendationsPage + 1);
+  else if (library.tab === "recommend") requestPopular(library.popularPage + 1);
+  else if (TOPIC_PAGES[library.tab]) requestTopic(library.tab, getTopicFeed(library.tab).page + 1);
+  else if (library.tab === "favorites" && library.selectedFolder) requestFavoriteResources(library.favoritePage + 1);
+  else if (library.tab === "history" && library.account?.loggedIn) requestRemoteHistory();
+  else if (library.tab === "following" && library.account?.loggedIn) requestFollowing();
+  if (loading()) renderLibrary();
 }
 
 function observeFeedEnd() {
@@ -432,12 +582,7 @@ function renderTopicPage(tab) {
     return;
   }
   libraryContent.append(makeVideoList(feed.videos));
-  if (!feed.complete) {
-    const loadMore = document.createElement("p");
-    loadMore.className = "load-more";
-    loadMore.textContent = feed.loading ? "正在加载更多…" : "继续下滑加载更多";
-    libraryContent.append(loadMore);
-  }
+  appendFeedFooter(feed.complete, feed.loading);
 }
 
 function renderSearchPage() {
@@ -447,18 +592,28 @@ function renderSearchPage() {
   form.className = "search-form";
   const input = document.createElement("input");
   input.type = "search";
-  input.value = library.searchKeyword;
+  input.value = searchDraft;
   input.placeholder = "搜索视频、音乐或 UP 主";
   input.setAttribute("aria-label", "搜索 B 站视频");
+  input.addEventListener("input", () => { searchDraft = input.value; });
+  input.addEventListener("compositionstart", () => { searchComposing = true; });
+  input.addEventListener("compositionend", () => {
+    searchComposing = false;
+    searchDraft = input.value;
+    renderLibrary();
+  });
   const submit = document.createElement("button");
   submit.type = "submit";
   setIcon(submit, "search", "搜索");
+  submit.setAttribute("aria-label", "搜索");
   form.append(input, submit);
   form.addEventListener("submit", (event) => {
     event.preventDefault();
+    if (event.isComposing || searchComposing) return;
     const keyword = input.value.trim();
     if (!keyword) return;
     library.searchKeyword = keyword;
+    searchDraft = keyword;
     library.searchResults = [];
     library.searchLoading = false;
     library.searchError = "";
@@ -478,17 +633,12 @@ function renderSearchPage() {
     return;
   }
   if (library.searchError && !library.searchResults.length) {
-    libraryContent.append(makeLibraryState(library.searchError, { kind: "error" }));
+    libraryContent.append(makeLibraryState(library.searchError, { kind: "error", actionLabel: "重试", onAction: retryCurrentFeed }));
     return;
   }
   if (library.searchResults.length) {
     libraryContent.append(makeVideoList(library.searchResults));
-    if (!library.searchComplete) {
-      const loadMore = document.createElement("p");
-      loadMore.className = "load-more";
-      loadMore.textContent = library.searchLoading ? "正在加载更多结果…" : "继续下滑加载更多";
-      libraryContent.append(loadMore);
-    }
+    appendFeedFooter(library.searchComplete, library.searchLoading);
   } else {
     libraryContent.append(makeLibraryState("没有找到相关视频。"));
   }
@@ -519,10 +669,31 @@ function renderAccount() {
 }
 
 function renderLibrary() {
+  // Keep drafts, focus and Chinese IME composition across async list updates.
+  if (searchComposing && library.tab === "search") return;
+  searchComposing = false;
+  const searchInput = libraryContent.querySelector('.search-form input');
+  const focused = searchInput && document.activeElement === searchInput && library.tab === "search";
+  const selection = focused ? [searchInput.selectionStart, searchInput.selectionEnd] : null;
+  const scrollTop = feedPane.scrollTop;
+  renderLibraryContent();
+  if (focused) {
+    const replacement = libraryContent.querySelector('.search-form input');
+    replacement?.focus({ preventScroll: true });
+    if (replacement && selection[0] !== null) replacement.setSelectionRange(...selection);
+  }
+  feedPane.scrollTop = scrollTop;
+}
+
+function renderLibraryContent() {
   librarySubtitle.removeAttribute("title");
   librarySection.classList.toggle("hide-section-heading", library.tab !== "search");
-  document.querySelectorAll("[data-library-tab]").forEach((button) => button.classList.toggle("active", button.dataset.libraryTab === library.tab));
-  document.querySelectorAll("[data-account-tab]").forEach((button) => button.classList.toggle("active", button.dataset.accountTab === library.tab));
+  document.querySelectorAll("[data-library-tab], [data-account-tab]").forEach((button) => {
+    const active = (button.dataset.libraryTab || button.dataset.accountTab) === library.tab;
+    button.classList.toggle("active", active);
+    if (active) button.setAttribute("aria-current", "page");
+    else button.removeAttribute("aria-current");
+  });
   const playerVisible = library.tab === "player";
   librarySection.hidden = playerVisible;
   queuePanel.hidden = !playerVisible;
@@ -544,26 +715,73 @@ function renderLibrary() {
     const summary = document.createElement("div");
     summary.className = "account-library-card";
     const avatar = document.createElement("img");
-    avatar.src = account.avatar || "";
+    avatar.src = account.avatar || placeholderImage;
     avatar.alt = `${account.name} 的头像`;
     const copy = document.createElement("div");
     const name = document.createElement("strong");
     name.textContent = account.name || "B站用户";
+    name.title = name.textContent;
+    const meta = document.createElement("div");
+    meta.className = "account-meta";
     const detail = document.createElement("span");
-    detail.textContent = account.level ? `B站 Lv.${account.level}` : "已登录";
-    copy.append(name, detail);
+    detail.textContent = account.level ? `B站 Lv.${account.level}` : "B站账号";
+    const loginStatus = document.createElement("span");
+    loginStatus.className = "account-status";
+    loginStatus.textContent = "已登录";
+    meta.append(detail, loginStatus);
+    copy.append(name, meta);
     summary.append(avatar, copy);
     libraryContent.append(summary);
-    const shortcuts = document.createElement("div");
-    shortcuts.className = "account-shortcuts";
-    for (const [label, tab] of [["关注", "following"], ["收藏", "favorites"], ["历史", "history"]]) {
-      const shortcut = document.createElement("button");
-      shortcut.type = "button";
-      shortcut.textContent = label;
-      shortcut.dataset.accountShortcut = tab;
-      shortcuts.append(shortcut);
+    if (Number.isSafeInteger(account.mid) && account.mid > 0) {
+      const uidRow = document.createElement("div");
+      uidRow.className = "account-uid";
+      const uid = document.createElement("span");
+      uid.textContent = `UID：${account.mid}`;
+      const copyUid = document.createElement("button");
+      copyUid.type = "button";
+      copyUid.textContent = "复制";
+      copyUid.setAttribute("aria-label", `复制 UID ${account.mid}`);
+      copyUid.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(String(account.mid));
+          status.textContent = "UID 已复制";
+        } catch (_) {
+          status.textContent = "复制失败，请手动选择 UID";
+        }
+      });
+      uidRow.append(uid, copyUid);
+      libraryContent.append(uidRow);
     }
-    libraryContent.append(shortcuts);
+    const membership = document.createElement("section");
+    membership.className = "account-membership";
+    const membershipLabel = document.createElement("span");
+    membershipLabel.textContent = "大会员";
+    const membershipStatus = document.createElement("strong");
+    membershipStatus.textContent = account.vipActive === true ? "已开通" : account.vipActive === false ? "未开通" : "状态未知";
+    membershipStatus.classList.toggle("is-active", account.vipActive === true);
+    membership.append(membershipLabel, membershipStatus);
+    libraryContent.append(membership);
+    const management = document.createElement("section");
+    management.className = "account-management";
+    const heading = document.createElement("strong");
+    heading.textContent = "账号管理";
+    const headingRow = document.createElement("div");
+    headingRow.className = "account-management-heading";
+    const refreshAccount = document.createElement("button");
+    refreshAccount.type = "button";
+    refreshAccount.textContent = accountRefreshPending ? "刷新中…" : "刷新状态";
+    refreshAccount.disabled = accountRefreshPending;
+    refreshAccount.addEventListener("click", () => {
+      if (accountRefreshPending) return;
+      accountRefreshPending = true;
+      refreshAccount.disabled = true;
+      refreshAccount.textContent = "刷新中…";
+      status.textContent = "正在刷新账号状态…";
+      command("GET_ACCOUNT");
+    });
+    headingRow.append(heading, refreshAccount);
+    const hint = document.createElement("p");
+    hint.textContent = "切换或退出账号会同步退出此浏览器中的 B 站登录。";
     const accountActions = document.createElement("div");
     accountActions.className = "account-actions";
     const switchAccount = document.createElement("button");
@@ -579,7 +797,8 @@ function renderLibrary() {
       if (confirm("退出当前 B 站账号？此浏览器中的 B 站页面也会同步退出。")) command("LOGOUT_BILIBILI");
     });
     accountActions.append(switchAccount, logout);
-    libraryContent.append(accountActions);
+    management.append(headingRow, hint, accountActions);
+    libraryContent.append(management);
     return;
   }
   if (library.tab === "search") {
@@ -610,7 +829,7 @@ function renderLibrary() {
     [libraryHeading.textContent, librarySubtitle.textContent] = headings[library.tab];
     if (!feed.items.length) {
       libraryContent.append(makeLibraryState(feed.loading ? "正在加载内容…" : (feed.error || (feed.loaded ? "暂时没有可显示的内容。" : "准备加载内容…")), {
-        kind: feed.error ? "error" : "loading",
+        kind: feed.error ? "error" : feed.loaded && !feed.loading ? "empty" : "loading",
         actionLabel: feed.error ? "重新加载" : "",
         onAction: feed.error ? () => {
           if (isPopular) {
@@ -642,12 +861,7 @@ function renderLibrary() {
     } else {
       libraryContent.append(makeVideoList(feed.items));
     }
-    if (!feed.complete) {
-      const loadMore = document.createElement("p");
-      loadMore.className = "load-more";
-      loadMore.textContent = feed.loading ? "正在加载更多…" : "继续下滑加载更多";
-      libraryContent.append(loadMore);
-    }
+    appendFeedFooter(feed.complete, feed.loading);
     return;
   }
   if (library.tab === "history") {
@@ -665,6 +879,7 @@ function renderLibrary() {
         actionLabel: "重新加载",
         onAction: () => {
           library.remoteHistoryError = "";
+          historyEmptyPages = 0;
           library.remoteHistoryLoaded = false;
           library.remoteHistoryComplete = false;
           requestRemoteHistory();
@@ -680,14 +895,12 @@ function renderLibrary() {
     }
     if (library.remoteHistoryItems.length) {
       libraryContent.append(makeHistoryList(library.remoteHistoryItems));
-      if (!library.remoteHistoryComplete) {
-        const loadMore = document.createElement("p");
-        loadMore.className = "load-more";
-        loadMore.textContent = library.remoteHistoryLoading ? "正在加载更多历史…" : "继续下滑加载更多";
-        libraryContent.append(loadMore);
-      }
+      appendFeedFooter(library.remoteHistoryComplete, library.remoteHistoryLoading);
+    } else if (library.remoteHistoryComplete) {
+      libraryContent.append(makeLibraryState("B站暂无可显示的视频观看历史。"));
     } else {
-      libraryContent.append(makeLibraryState("B站暂无观看历史。"));
+      libraryContent.append(makeLibraryState(library.remoteHistoryLoading ? "正在加载 B站历史…" : "正在查找视频观看记录…", { kind: "loading" }));
+      appendFeedFooter(false, library.remoteHistoryLoading);
     }
     return;
   }
@@ -701,7 +914,7 @@ function renderLibrary() {
       }));
       return;
     }
-    if (library.followingError) {
+    if (library.followingError && !library.followingVideos.length) {
       libraryContent.append(makeLibraryState(library.followingError, {
         kind: "error",
         actionLabel: "重新加载",
@@ -713,22 +926,16 @@ function renderLibrary() {
       }));
       return;
     }
-    if (!library.followingLoaded || library.followingLoading) {
+    if (!library.followingVideos.length && (!library.followingLoaded || library.followingLoading)) {
       libraryContent.append(makeLibraryState(library.followingLoading ? "正在加载特别关注…" : "准备加载特别关注…", { kind: "loading" }));
       if (!library.followingLoaded && !library.followingLoading) {
-        library.followingLoading = true;
-        command("GET_FOLLOWING", { offset: library.followingOffset });
+        requestFollowing();
       }
       return;
     }
     if (library.followingVideos.length) {
       libraryContent.append(makeVideoList(library.followingVideos));
-      if (!library.followingComplete) {
-        const loadMore = document.createElement("p");
-        loadMore.className = "load-more";
-        loadMore.textContent = library.followingLoading ? "正在加载更多关注…" : "继续下滑加载更多";
-        libraryContent.append(loadMore);
-      }
+      appendFeedFooter(library.followingComplete, library.followingLoading);
     } else {
       libraryContent.append(makeLibraryState("特别关注中暂时没有可播放的视频。"));
     }
@@ -749,6 +956,8 @@ function renderLibrary() {
     const back = document.createElement("button");
     back.type = "button";
     back.dataset.backFolders = "true";
+    back.className = "folder-back";
+    back.title = `返回收藏夹列表：${library.selectedFolder.title}`;
     back.textContent = `← ${library.selectedFolder.title}`;
     libraryContent.append(back);
     if (library.favoriteError && !library.favoriteVideos.length) {
@@ -758,18 +967,16 @@ function renderLibrary() {
         onAction: () => {
           library.favoriteError = "";
           library.favoriteComplete = false;
-          requestFavoriteResources(1);
+          favoriteEmptyPages = 0;
+          requestFavoriteResources(library.favoritePage + 1);
           renderLibrary();
         }
       }));
     } else if (library.favoriteVideos.length) {
       libraryContent.append(makeVideoList(library.favoriteVideos));
-      if (!library.favoriteComplete) {
-        const loadMore = document.createElement("p");
-        loadMore.className = "load-more";
-        loadMore.textContent = library.favoriteLoading ? "正在加载更多收藏…" : "继续下滑加载更多";
-        libraryContent.append(loadMore);
-      }
+      appendFeedFooter(library.favoriteComplete, library.favoriteLoading);
+    } else if (library.favoriteComplete) {
+      libraryContent.append(makeLibraryState("这个收藏夹还没有可播放的视频。"));
     } else {
       libraryContent.append(makeLibraryState(library.favoriteLoading ? "正在加载收藏夹视频…" : "准备加载收藏夹视频…", { kind: "loading" }));
       if (!library.favoriteLoading && !library.favoriteComplete) requestFavoriteResources(1);
@@ -777,7 +984,11 @@ function renderLibrary() {
     return;
   }
   if (!library.folders.length) {
-    libraryContent.append(makeLibraryState("没有可读取的收藏夹，或正在刷新账号状态。", { kind: "loading" }));
+    libraryContent.append(makeLibraryState(foldersError || (foldersLoaded ? "暂无收藏夹。" : "正在加载收藏夹…"), {
+      kind: foldersError ? "error" : foldersLoaded ? "empty" : "loading",
+      actionLabel: foldersError ? "重试" : "",
+      onAction: () => { foldersError = ""; foldersLoaded = false; command("GET_ACCOUNT"); renderLibrary(); }
+    }));
     return;
   }
   const folders = document.createElement("div");
@@ -818,6 +1029,8 @@ function syncVideo(nextState = currentState) {
 }
 
 function releaseVideo() {
+  videoRequestId += 1;
+  videoRecovery.hidden = true;
   if (videoSyncTimer) clearInterval(videoSyncTimer);
   videoSyncTimer = null;
   video.pause();
@@ -830,8 +1043,34 @@ function releaseVideo() {
   requestedVideoItemId = "";
 }
 
+function requestVideoSource(refresh = false) {
+  if (!playerPageVisible() || !currentState?.playing || !currentState.currentItem) return;
+  requestedVideoItemId = currentState.currentItem.id;
+  videoRetry.disabled = true;
+  videoRetry.textContent = "恢复中…";
+  command("GET_VIEW_SOURCE", { refresh, requestId: ++videoRequestId });
+}
+
+function showVideoFailure(message) {
+  const itemId = currentState?.currentItem?.id;
+  releaseVideo();
+  // Keep state updates from automatically retrying the same failed item.
+  requestedVideoItemId = itemId || "";
+  videoShell.hidden = true;
+  videoRecoveryText.textContent = `${message}，可单独重试画面。`;
+  videoRecovery.hidden = false;
+  videoRetry.disabled = false;
+  videoRetry.textContent = "重试画面";
+}
+
+videoRetry.addEventListener("click", () => {
+  if (videoRetry.disabled) return;
+  videoSourceRetryCount = 0;
+  requestVideoSource(true);
+});
+
 function loadVideoSource(message) {
-  if (message.itemId !== currentState?.currentItem?.id) return;
+  if (!playerPageVisible() || !currentState?.playing || message.requestId !== videoRequestId || message.itemId !== currentState?.currentItem?.id) return;
   if (videoSourceRetryItemId !== message.itemId) {
     videoSourceRetryItemId = message.itemId;
     videoSourceRetryCount = 0;
@@ -850,8 +1089,7 @@ function loadVideoSource(message) {
   videoSyncTimer = setInterval(() => {
     if (videoExpiresAt && Date.now() >= videoExpiresAt - 30_000 && currentState?.currentItem?.id === message.itemId) {
       videoExpiresAt = 0;
-      requestedVideoItemId = message.itemId;
-      command("GET_VIEW_SOURCE");
+      requestVideoSource(true);
       return;
     }
     syncVideo();
@@ -864,6 +1102,7 @@ video.addEventListener("loadedmetadata", () => {
   syncVideo();
 });
 video.addEventListener("error", () => {
+  if (!playerPageVisible() || !currentState?.playing || loadedVideoItemId !== currentState.currentItem?.id || !videoUrls.length) return;
   videoReady = false;
   videoUrlIndex += 1;
   if (videoUrlIndex < videoUrls.length) {
@@ -872,13 +1111,10 @@ video.addEventListener("error", () => {
   } else {
     if (videoSourceRetryCount < 1 && currentState?.playing) {
       videoSourceRetryCount += 1;
-      requestedVideoItemId = "";
-      status.textContent = "正在重新获取视频画面…";
-      command("GET_VIEW_SOURCE");
+      requestVideoSource(true);
       return;
     }
-    videoShell.hidden = true;
-    status.textContent = "视频画面加载失败；后台音频仍在播放";
+    showVideoFailure("视频画面加载失败");
   }
 });
 
@@ -886,15 +1122,24 @@ toggle.addEventListener("click", () => command("TOGGLE"));
 previous.addEventListener("click", () => command("PREVIOUS"));
 next.addEventListener("click", () => command("NEXT"));
 function startSeeking() { progressSeeking = true; }
+function updateProgressFill(control) {
+  const max = Number(control.max) || 0;
+  const value = Math.min(Math.max(0, Number(control.value) || 0), max);
+  control.style.setProperty("--progress", max > 0 ? `${value / max * 100}%` : "0%");
+  control.setAttribute("aria-valuetext", `${formatTime(value)} / ${formatTime(max)}`);
+}
 function commitSeek(control) {
   progressSeeking = false;
   command("SEEK", { position: Number(control.value) });
 }
 progress.addEventListener("pointerdown", startSeeking);
 miniProgress.addEventListener("pointerdown", startSeeking);
+progress.addEventListener("input", () => { startSeeking(); updateProgressFill(progress); time.textContent = `${formatTime(progress.value)} / ${formatTime(progress.max)}`; });
+miniProgress.addEventListener("input", () => { startSeeking(); updateProgressFill(miniProgress); miniCurrentTime.textContent = formatTime(miniProgress.value); });
 progress.addEventListener("change", () => commitSeek(progress));
 miniProgress.addEventListener("change", () => commitSeek(miniProgress));
 window.addEventListener("pointerup", () => { progressSeeking = false; });
+window.addEventListener("pointercancel", () => { progressSeeking = false; });
 miniPrevious.addEventListener("click", () => command("PREVIOUS"));
 miniToggle.addEventListener("click", () => command("TOGGLE"));
 miniNext.addEventListener("click", () => command("NEXT"));
@@ -923,6 +1168,7 @@ accountAction.addEventListener("click", () => {
 });
 document.querySelectorAll("[data-account-tab]").forEach((button) => button.addEventListener("click", () => {
   library.tab = button.dataset.accountTab;
+  if (library.tab === "history" && library.account?.loggedIn) refreshRemoteHistory();
   status.textContent = "";
   library.selectedFolder = null;
   library.favoriteVideos = [];
@@ -931,6 +1177,10 @@ document.querySelectorAll("[data-account-tab]").forEach((button) => button.addEv
 }));
 document.querySelectorAll("[data-library-tab]").forEach((button) => button.addEventListener("click", () => {
   library.tab = button.dataset.libraryTab;
+  if (library.tab === "recommend") {
+    refreshPopular();
+    feedPane.scrollTop = 0;
+  }
   status.textContent = "";
   library.selectedFolder = null;
   library.favoriteVideos = [];
@@ -945,16 +1195,13 @@ feedPane.addEventListener("scroll", () => {
 libraryContent.addEventListener("click", (event) => {
   const play = event.target.closest("button[data-play-bvid]");
   const folder = event.target.closest("button[data-folder-id]");
-  const accountShortcut = event.target.closest("button[data-account-shortcut]");
   const retryFollowing = event.target.closest("button[data-retry-following]");
-  if (accountShortcut) {
-    library.tab = accountShortcut.dataset.accountShortcut;
-    status.textContent = "";
-    renderLibrary();
-  } else if (play) {
+  if (play) {
     status.textContent = "正在加入播放队列…";
     command("PLAY_INPUT", { input: play.dataset.playBvid });
   } else if (folder) {
+    favoriteRequestId += 1;
+    favoriteEmptyPages = 0;
     library.selectedFolder = library.folders.find((item) => item.id === Number(folder.dataset.folderId)) || null;
     library.favoriteVideos = [];
     library.favoritePage = 0;
@@ -963,6 +1210,7 @@ libraryContent.addEventListener("click", (event) => {
     library.favoriteComplete = false;
     renderLibrary();
   } else if (event.target.closest("button[data-back-folders]")) {
+    favoriteRequestId += 1;
     library.selectedFolder = null;
     library.favoriteVideos = [];
     library.favoritePage = 0;
@@ -983,9 +1231,26 @@ port.onMessage.addListener((message) => {
   if (message.type === "STATE") render(message.state);
   if (message.type === "VIEW_SOURCE") loadVideoSource(message);
   if (message.type === "ACCOUNT") {
+    if (accountRefreshPending) {
+      accountRefreshPending = false;
+      status.textContent = "账号状态已更新";
+    }
     const wasLoggedIn = Boolean(library.account?.loggedIn);
+    const accountChanged = library.account?.mid !== message.account?.mid;
+    if (accountChanged || !message.account?.loggedIn) historyRequestId += 1;
+    if (accountChanged || !message.account?.loggedIn) favoriteRequestId += 1;
+    if (accountChanged || !message.account?.loggedIn) followingRequestId += 1;
     library.account = message.account;
-    if (!message.account?.loggedIn) {
+    foldersLoaded = !message.account?.loggedIn;
+    foldersError = "";
+    if (accountChanged || !message.account?.loggedIn) {
+      library.folders = [];
+      library.selectedFolder = null;
+      library.favoriteVideos = [];
+      library.favoriteLoading = false;
+      library.favoriteError = "";
+      library.favoriteComplete = false;
+      library.favoritePage = 0;
       library.remoteHistoryItems = [];
       library.remoteHistoryCursor = "";
       library.remoteHistoryLoaded = false;
@@ -1017,21 +1282,28 @@ port.onMessage.addListener((message) => {
   }
   if (message.type === "HISTORY") { library.historyItems = message.items || []; renderLibrary(); }
   if (message.type === "REMOTE_HISTORY") {
+    if (!library.account?.loggedIn || message.requestId !== historyRequestId) return;
     const incoming = message.items || [];
     const known = new Set(library.remoteHistoryItems.map((item) => item.id || `${item.bvid}:${item.page || 1}`));
     const added = incoming.filter((item) => {
       const key = item.id || `${item.bvid}:${item.page || 1}`;
-      return item.bvid && !known.has(key);
+      if (!item.bvid || known.has(key)) return false;
+      known.add(key);
+      return true;
     });
     library.remoteHistoryItems.push(...added);
-    library.remoteHistoryCursor = String(message.viewAt || "");
-    library.remoteHistoryComplete = !message.hasMore || incoming.length === 0 || added.length === 0;
+    const nextCursor = String(message.viewAt || "");
+    const cursorAdvanced = Boolean(nextCursor) && nextCursor !== library.remoteHistoryCursor;
+    library.remoteHistoryCursor = nextCursor;
+    historyEmptyPages = added.length ? 0 : historyEmptyPages + 1;
+    library.remoteHistoryComplete = !message.hasMore || !message.rawCount || !cursorAdvanced;
     library.remoteHistoryLoaded = true;
     library.remoteHistoryLoading = false;
-    library.remoteHistoryError = "";
+    library.remoteHistoryError = !library.remoteHistoryComplete && historyEmptyPages >= 3 ? "连续几页没有新的视频记录，点击重试继续加载。" : "";
     renderLibrary();
   }
   if (message.type === "FOLLOWING") {
+    if (!library.account?.loggedIn || message.requestId !== followingRequestId) return;
     const incoming = message.videos || [];
     const known = new Set(library.followingVideos.map((item) => item.bvid));
     const added = incoming.filter((item) => item.bvid && !known.has(item.bvid));
@@ -1057,7 +1329,7 @@ port.onMessage.addListener((message) => {
       renderLibrary();
       return;
     }
-    if (String(message.keyword || "") !== library.searchKeyword) return;
+    if (message.requestId !== searchRequestId || String(message.keyword || "") !== library.searchKeyword) return;
     const incoming = message.videos || [];
     const known = new Set(library.searchResults.map((item) => item.bvid));
     const added = incoming.filter((item) => item.bvid && !known.has(item.bvid));
@@ -1069,6 +1341,7 @@ port.onMessage.addListener((message) => {
     renderLibrary();
   }
   if (message.type === "POPULAR_RESULTS") {
+    if (message.requestId !== popularRequestId) return;
     const incoming = message.videos || [];
     const known = new Set(library.popular.map((item) => item.bvid));
     const added = incoming.filter((item) => item.bvid && !known.has(item.bvid));
@@ -1090,18 +1363,43 @@ port.onMessage.addListener((message) => {
     library.recommendationsLoaded = true;
     renderLibrary();
   }
-  if (message.type === "FAVORITE_FOLDERS") { library.folders = message.folders || []; renderLibrary(); }
-  if (message.type === "FAVORITE_RESOURCES" && library.selectedFolder?.id === message.folderId) {
+  if (message.type === "FAVORITE_FOLDERS" && message.mid === library.account?.mid) {
+    library.folders = message.folders || [];
+    foldersLoaded = true;
+    foldersError = "";
+    renderLibrary();
+  }
+  if (message.type === "FAVORITE_RESOURCES" && library.selectedFolder?.id === message.folderId && message.requestId === favoriteRequestId) {
     const incoming = message.videos || [];
     const known = new Set(library.favoriteVideos.map((item) => item.bvid));
-    library.favoriteVideos.push(...incoming.filter((item) => item.bvid && !known.has(item.bvid)));
+    const added = incoming.filter((item) => { if (!item.bvid || known.has(item.bvid)) return false; known.add(item.bvid); return true; });
+    library.favoriteVideos.push(...added);
     library.favoritePage = Number(message.page) || library.favoritePage || 1;
-    library.favoriteComplete = incoming.length < 20 || incoming.length === 0;
+    favoriteEmptyPages = added.length ? 0 : favoriteEmptyPages + 1;
+    library.favoriteComplete = !message.hasMore || !message.rawCount;
     library.favoriteLoading = false;
-    library.favoriteError = "";
+    library.favoriteError = !library.favoriteComplete && favoriteEmptyPages >= 3 ? "连续几页没有新的视频，点击重试继续加载。" : "";
     renderLibrary();
   }
   if (message.type === "NOTICE") {
+    if (message.scope === "following" && (!library.account?.loggedIn || message.requestId !== followingRequestId)) return;
+    if (message.scope === "popular" && message.requestId !== popularRequestId) return;
+    if (message.scope === "remote-history" && message.requestId !== historyRequestId) return;
+    if (message.scope === "video") {
+      if (message.requestId === videoRequestId && message.itemId === currentState?.currentItem?.id && playerPageVisible() && currentState?.playing) showVideoFailure(message.message);
+      return;
+    }
+    if (message.scope === "folders") {
+      if (message.mid !== library.account?.mid) return;
+      foldersLoaded = true;
+      foldersError = message.message;
+      renderLibrary();
+      return;
+    }
+    if (accountRefreshPending && message.scope === "account") {
+      accountRefreshPending = false;
+      if (library.tab === "account") renderLibrary();
+    }
     const noticeMessage = String(message.message || "");
     if (noticeMessage.startsWith("推荐加载失败")) {
       library.recommendationsLoading = false;
@@ -1121,6 +1419,7 @@ port.onMessage.addListener((message) => {
       renderLibrary();
     }
     if (noticeMessage.startsWith("收藏夹加载失败")) {
+      if (message.folderId !== library.selectedFolder?.id || message.requestId !== favoriteRequestId) return;
       library.favoriteLoading = false;
       library.favoriteError = noticeMessage;
       renderLibrary();
@@ -1129,7 +1428,6 @@ port.onMessage.addListener((message) => {
       library.remoteHistoryLoading = false;
       library.remoteHistoryLoaded = true;
       library.remoteHistoryError = noticeMessage;
-      library.remoteHistoryComplete = true;
       renderLibrary();
     }
     if (noticeMessage.startsWith("搜索失败")) {
@@ -1139,6 +1437,7 @@ port.onMessage.addListener((message) => {
         feed.loaded = true;
         feed.error = noticeMessage;
       } else {
+        if (message.requestId !== searchRequestId || message.keyword !== library.searchKeyword) return;
         library.searchLoading = false;
         library.searchError = noticeMessage;
       }
@@ -1157,7 +1456,7 @@ setIcon(miniToggle, "playCircle");
 setIcon(miniNext, "next");
 setIcon(clearQueue, "trash", "清空");
 document.querySelectorAll("[data-library-tab]").forEach((button) => {
-  button.title = button.textContent.trim();
+  button.title = button.dataset.libraryTab === "recommend" ? "查看或刷新推荐" : button.textContent.trim();
 });
 renderAccount();
 renderLibrary();

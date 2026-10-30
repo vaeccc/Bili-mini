@@ -15,6 +15,7 @@ let requestId = 0;
 let recoveryInFlight = false;
 let lastPersistAt = 0;
 let playOperationId = 0;
+let selectionRequestId = 0;
 const pendingStartRequests = new Set();
 const shuffleHistory = [];
 
@@ -204,8 +205,9 @@ function describeError(error) {
   return error?.message || "播放失败，请稍后重试";
 }
 
-async function addInputAndPlay(input) {
+async function addInputAndPlay(input, selectionId) {
   const video = await getVideoInfo(input);
+  if (selectionId !== selectionRequestId) return;
   const existingIndexes = new Map(playerState.queue.map((item, index) => [item.id, index]));
   const newPages = video.pages.filter((item) => !existingIndexes.has(item.id));
   playerState.queue = [...playerState.queue, ...newPages];
@@ -295,7 +297,10 @@ function rememberShuffle(index) {
 async function moveQueue(offset, options = {}) {
   await initialize();
   const nextIndex = queueIndexFor(offset, options);
-  if (nextIndex < 0) return;
+  if (nextIndex < 0) {
+    if (!options.automatic) notice(offset < 0 && playerState.playMode === "SHUFFLE" ? "暂无上一首播放记录" : (offset < 0 ? "已经是第一首了" : "已经是最后一首了"));
+    return;
+  }
   await playItem(playerState.queue[nextIndex], nextIndex, 0);
 }
 
@@ -361,7 +366,7 @@ async function cyclePlayMode() {
   await publish();
 }
 
-async function sendViewSource(port) {
+async function sendViewSource(port, message = {}) {
   await initialize();
   if (!playerState.currentItem) {
     port.postMessage({ type: "NOTICE", message: "当前没有可显示的视频" });
@@ -369,10 +374,18 @@ async function sendViewSource(port) {
   }
   if (!playerState.playing) return;
   await syncFromPlayer();
+  const item = playerState.currentItem;
+  const operationId = playOperationId;
+  if (!item || !playerState.playing) return;
+  const isCurrent = () => operationId === playOperationId && playerState.currentItem?.id === item.id;
+  const viewNotice = (text) => {
+    if (isCurrent()) port.postMessage({ type: "NOTICE", scope: "video", requestId: message.requestId, itemId: item.id, message: text });
+  };
   const videoExpired = playback?.videoExpiresAt && Date.now() >= playback.videoExpiresAt - 30_000;
-  if (!playback?.videoUrls?.length || videoExpired) {
+  if (message.refresh || !playback?.videoUrls?.length || videoExpired) {
     try {
-      const sources = await getPlaybackSources(playerState.currentItem);
+      const sources = await getPlaybackSources(item);
+      if (!isCurrent()) return;
       playback = {
         ...(playback || {}),
         videoUrls: sources.videoUrls,
@@ -380,16 +393,17 @@ async function sendViewSource(port) {
         videoQuality: sources.videoQuality
       };
     } catch (error) {
-      port.postMessage({ type: "NOTICE", message: `视频画面不可用：${describeError(error)}` });
+      viewNotice(`视频画面不可用：${describeError(error)}`);
       return;
     }
   }
   if (!playback.videoUrls?.length) {
-    port.postMessage({ type: "NOTICE", message: "当前视频没有可显示的画面" });
+    viewNotice("当前视频没有可显示的画面");
     return;
   }
   port.postMessage({
     type: "VIEW_SOURCE",
+    requestId: message.requestId,
     urls: playback.videoUrls,
     expiresAt: playback.videoExpiresAt,
     quality: playback.videoQuality,
@@ -405,11 +419,15 @@ async function sendAccount(port) {
     const account = await getAccount();
     port.postMessage({ type: "ACCOUNT", account });
     if (account.loggedIn) {
-      const folders = await getFavoriteFolders(account.mid);
-      port.postMessage({ type: "FAVORITE_FOLDERS", folders });
+      try {
+        const folders = await getFavoriteFolders(account.mid);
+        port.postMessage({ type: "FAVORITE_FOLDERS", folders, mid: account.mid });
+      } catch (error) {
+        port.postMessage({ type: "NOTICE", scope: "folders", mid: account.mid, message: `收藏夹列表加载失败：${describeError(error)}` });
+      }
     }
   } catch (error) {
-    port.postMessage({ type: "NOTICE", message: describeError(error) });
+    port.postMessage({ type: "NOTICE", scope: "account", message: describeError(error) });
   }
 }
 
@@ -443,12 +461,12 @@ async function sendHistory(port) {
   }
 }
 
-async function sendRemoteHistory(port, viewAt = "") {
+async function sendRemoteHistory(port, viewAt = "", requestId) {
   try {
     const result = await getRemoteHistory(viewAt);
-    port.postMessage({ type: "REMOTE_HISTORY", ...result });
+    port.postMessage({ type: "REMOTE_HISTORY", requestId, ...result });
   } catch (error) {
-    port.postMessage({ type: "NOTICE", message: `B站历史读取失败：${describeError(error)}` });
+    port.postMessage({ type: "NOTICE", scope: "remote-history", requestId, message: `B站历史读取失败：${describeError(error)}` });
   }
 }
 
@@ -461,46 +479,48 @@ async function sendRecommendations(port, page = 1) {
   }
 }
 
-async function sendPopular(port, page = 1) {
+async function sendPopular(port, page = 1, requestId) {
   try {
     const currentPage = Math.max(1, Number(page) || 1);
-    port.postMessage({ type: "POPULAR_RESULTS", page: currentPage, videos: await getPopularVideos(currentPage) });
+    port.postMessage({ type: "POPULAR_RESULTS", requestId, page: currentPage, videos: await getPopularVideos(currentPage) });
   } catch (error) {
-    port.postMessage({ type: "NOTICE", message: `热门加载失败：${describeError(error)}` });
+    port.postMessage({ type: "NOTICE", scope: "popular", requestId, message: `热门加载失败：${describeError(error)}` });
   }
 }
 
-async function sendFollowing(port, offset = "") {
+async function sendFollowing(port, offset = "", requestId) {
   try {
     const result = await getFollowingPage(offset);
-    port.postMessage({ type: "FOLLOWING", ...result });
+    port.postMessage({ type: "FOLLOWING", requestId, ...result });
   } catch (error) {
-    port.postMessage({ type: "NOTICE", message: `特别关注加载失败：${describeError(error)}` });
+    port.postMessage({ type: "NOTICE", scope: "following", requestId, message: `特别关注加载失败：${describeError(error)}` });
   }
 }
 
-async function sendSearch(port, keyword, page = 1, context = "") {
+async function sendSearch(port, keyword, page = 1, context = "", requestId) {
   try {
     const currentPage = Math.max(1, Number(page) || 1);
-    port.postMessage({ type: "SEARCH_RESULTS", keyword: String(keyword || ""), page: currentPage, context: String(context || ""), videos: await searchVideos(keyword, currentPage) });
+    port.postMessage({ type: "SEARCH_RESULTS", requestId, keyword: String(keyword || ""), page: currentPage, context: String(context || ""), videos: await searchVideos(keyword, currentPage) });
   } catch (error) {
-    port.postMessage({ type: "NOTICE", context: String(context || ""), message: `搜索失败：${describeError(error)}` });
+    port.postMessage({ type: "NOTICE", requestId, keyword: String(keyword || ""), context: String(context || ""), message: `搜索失败：${describeError(error)}` });
   }
 }
 
-async function sendFavoriteResources(port, folderId, page = 1) {
+async function sendFavoriteResources(port, folderId, page = 1, requestId) {
   try {
     const currentPage = Math.max(1, Number(page) || 1);
-    port.postMessage({ type: "FAVORITE_RESOURCES", folderId: Number(folderId), page: currentPage, videos: await getFavoriteResources(folderId, currentPage) });
+    const result = await getFavoriteResources(folderId, currentPage);
+    port.postMessage({ type: "FAVORITE_RESOURCES", folderId: Number(folderId), page: currentPage, requestId, ...result });
   } catch (error) {
-    port.postMessage({ type: "NOTICE", message: `收藏夹加载失败：${describeError(error)}` });
+    port.postMessage({ type: "NOTICE", folderId: Number(folderId), requestId, message: `收藏夹加载失败：${describeError(error)}` });
   }
 }
 
 async function handleCommand(message) {
+  const selectionId = ["PLAY_INPUT", "PLAY_INDEX", "PREVIOUS", "NEXT", "REMOVE_INDEX", "CLEAR_QUEUE"].includes(message.type) ? ++selectionRequestId : selectionRequestId;
   switch (message.type) {
     case "PLAY_INPUT":
-      try { await addInputAndPlay(message.input); } catch (error) { notice(describeError(error)); }
+      try { await addInputAndPlay(message.input, selectionId); } catch (error) { if (selectionId === selectionRequestId) notice(describeError(error)); }
       break;
     case "TOGGLE":
       if (playerState.playing) await pause(); else await resume();
@@ -527,7 +547,7 @@ chrome.runtime.onConnect.addListener((port) => {
       if (message.type === "GET_STATE") {
         await syncFromPlayer();
         port.postMessage({ type: "STATE", state: publicState() });
-      } else if (message.type === "GET_VIEW_SOURCE") await sendViewSource(port);
+      } else if (message.type === "GET_VIEW_SOURCE") await sendViewSource(port, message);
       else if (message.type === "GET_ACCOUNT") await sendAccount(port);
       else if (message.type === "LOGOUT_BILIBILI") await logoutBilibili();
       else if (message.type === "SWITCH_BILIBILI_ACCOUNT") {
@@ -535,12 +555,12 @@ chrome.runtime.onConnect.addListener((port) => {
         await chrome.tabs.create({ url: "https://passport.bilibili.com/login" });
       }
       else if (message.type === "GET_HISTORY") await sendHistory(port);
-      else if (message.type === "GET_REMOTE_HISTORY") await sendRemoteHistory(port, message.viewAt);
+      else if (message.type === "GET_REMOTE_HISTORY") await sendRemoteHistory(port, message.viewAt, message.requestId);
       else if (message.type === "GET_RECOMMENDATIONS") await sendRecommendations(port, message.page);
-      else if (message.type === "GET_POPULAR") await sendPopular(port, message.page);
-      else if (message.type === "GET_FOLLOWING") await sendFollowing(port, message.offset);
-      else if (message.type === "SEARCH_VIDEOS") await sendSearch(port, message.keyword, message.page, message.context);
-      else if (message.type === "GET_FAVORITE_RESOURCES") await sendFavoriteResources(port, message.folderId, message.page);
+      else if (message.type === "GET_POPULAR") await sendPopular(port, message.page, message.requestId);
+      else if (message.type === "GET_FOLLOWING") await sendFollowing(port, message.offset, message.requestId);
+      else if (message.type === "SEARCH_VIDEOS") await sendSearch(port, message.keyword, message.page, message.context, message.requestId);
+      else if (message.type === "GET_FAVORITE_RESOURCES") await sendFavoriteResources(port, message.folderId, message.page, message.requestId);
       else if (message.type === "OPEN_BILIBILI_LOGIN") await chrome.tabs.create({ url: "https://www.bilibili.com/" });
       else await handleCommand(message);
     } catch (error) {

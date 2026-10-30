@@ -14,7 +14,7 @@
         <button class="active" data-account-tab="account" type="button">我的</button>
         <button data-account-tab="following" type="button">关注</button>
         <button data-account-tab="favorites" type="button">收藏</button>
-        <button data-account-tab="history" type="button">历史</button>
+        <button data-account-tab="history" type="button" title="查看或刷新历史记录">历史</button>
       </nav>
       <section id="account-panel" class="account-panel">
         <img id="account-avatar" alt="" hidden>
@@ -31,6 +31,10 @@
             <video id="video" muted playsinline preload="metadata"></video>
             <span id="video-note">画面仅在此弹窗打开时加载</span>
           </section>
+          <div id="video-recovery" class="video-recovery" hidden role="status">
+            <span id="video-recovery-text"></span>
+            <button id="video-retry" type="button">重试画面</button>
+          </div>
           <section id="now-playing" class="now-playing-card" hidden>
             <img id="cover" alt="">
             <div class="track-copy">
